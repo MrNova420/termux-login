@@ -1,0 +1,118 @@
+#!/bin/bash
+
+# Termux Login System with GitHub Sync
+
+# Variables
+CONFIG_FILE="$HOME/.termux_login_config"
+LOCKOUT_FILE="$HOME/.termux_login_lockout"
+MAX_ATTEMPTS=3
+LOCKOUT_TIME=300  # Lockout time in seconds (5 minutes)
+GIT_REPO_PATH="$HOME/termux_login_repo"  # Local GitHub repository path
+REPO_URL="git@github.com:your_username/your_repository.git"  # Replace with your GitHub repo URL
+
+# Function to hash passwords
+hash_password() {
+    echo -n "$1" | sha256sum | awk '{print $1}'
+}
+
+# Function to display a locked-out message
+lockout_message() {
+    echo "Too many incorrect attempts. Access locked for $((LOCKOUT_TIME / 60)) minutes."
+    sleep 5
+}
+
+# Initialize the login system
+initialize_login() {
+    echo "Welcome! Setting up your Termux Login for the first time."
+    read -sp "Enter a new password: " password
+    echo
+    read -sp "Confirm the password: " confirm_password
+    echo
+
+    if [ "$password" != "$confirm_password" ]; then
+        echo "Passwords do not match. Please try again."
+        initialize_login
+    else
+        hashed_password=$(hash_password "$password")
+        echo "$hashed_password" > "$CONFIG_FILE"
+        chmod 600 "$CONFIG_FILE"
+        echo "Setup complete! Your Termux Login is now active."
+        sync_to_github "Initial setup: Added configuration file"
+    fi
+}
+
+# Verify password
+verify_password() {
+    local entered_password="$1"
+    local saved_password
+    saved_password=$(cat "$CONFIG_FILE")
+
+    if [ "$(hash_password "$entered_password")" == "$saved_password" ]; then
+        return 0  # Password is correct
+    else
+        return 1  # Password is incorrect
+    fi
+}
+
+# GitHub sync function
+sync_to_github() {
+    local commit_message="$1"
+
+    # Check if the GitHub repository exists locally
+    if [ ! -d "$GIT_REPO_PATH/.git" ]; then
+        echo "Cloning the GitHub repository..."
+        git clone "$REPO_URL" "$GIT_REPO_PATH"
+    fi
+
+    # Sync the script and config file to the repository
+    cp "$0" "$GIT_REPO_PATH/termux_login.sh"
+    cp "$CONFIG_FILE" "$GIT_REPO_PATH/" 2>/dev/null || true
+
+    cd "$GIT_REPO_PATH" || exit
+    git add .
+    git commit -m "$commit_message"
+    git push
+    echo "Changes have been synced to GitHub."
+}
+
+# Login function
+login() {
+    if [ -f "$LOCKOUT_FILE" ]; then
+        local lockout_time=$(cat "$LOCKOUT_FILE")
+        local current_time=$(date +%s)
+
+        if (( current_time - lockout_time < LOCKOUT_TIME )); then
+            lockout_message
+            exit 1
+        else
+            rm "$LOCKOUT_FILE"
+        fi
+    fi
+
+    local attempts=0
+
+    while [ $attempts -lt $MAX_ATTEMPTS ]; do
+        read -sp "Enter your password: " password
+        echo
+
+        if verify_password "$password"; then
+            echo "Login successful! Welcome to Termux."
+            return 0
+        else
+            echo "Incorrect password. Try again."
+            ((attempts++))
+        fi
+    done
+
+    echo "$(date +%s)" > "$LOCKOUT_FILE"
+    lockout_message
+    exit 1
+}
+
+# Main script execution
+if [ ! -f "$CONFIG_FILE" ]; then
+    initialize_login
+else
+    login
+    sync_to_github "Updated login script or configuration file"
+fi
